@@ -1,0 +1,131 @@
+Instructions for running PyTorch script:
+
+Examples for command to run:
+
+For running k-fold validation on word-based model:
+pytorch/models --model_name hparam-base.pt --no_val \
+-rp pytorch/hparam-search/base path/to/pickles/all_sentences.pkl \
+-w -kfv -k 5 --word_emb_dim 100 --hidden_dim 100 --char_emb_dim 25 \
+--dropout 0.5 --num_kernels 500 --kernel_width 6 --directions 2 \
+--learning-rate 0.1 --batch_size 8 -l pytorch/hparam-search/base.log
+
+For training char-based CNN model:
+models\DD-MM --model_name no_smooth.pt
+ path/to/pickles/all_sentences.pkl  -c --cnn -r -l mmmD.log
+ -rp models\DD-MM\no_smooth
+
+For running flat morphological tagging k-fold validation:
+pytorch/models --model_name morph-test.pt -rp pytorch/morph-test
+path/to/pickles/all_sentences.pkl -w -kfv -k 5 --learning-rate 0.1
+--batch_size 8 -l pytorch/morph-test --morph --flat
+
+For training hierarchical morph-tagging on all data with no early stopping:
+pytorch/models --model_name morph-test-full.pt -rp pytorch/morph-test-full
+path/to/pickles/all_sentences.pkl -c --cnn -kfv -r --learning-rate 0.1
+--batch_size 8 -l pytorch/morph-test --morph --hierarchical --no_val --epoch 15
+
+
+The positional arguments (model_dir, data_paths) are required for all runs.
+In the case of training, the first is the directory in which the model and required
+dictionaries will be saved.
+In the case of testing or tagging, the first should be the path to the directory
+in which these objects can be found.
+data_paths are the paths to pickles of Sentence objects (created by parse.py in JA module)
+on which you wish to train/test/tag.
+
+Not all of the "optional" arguments are actually optional.
+You must choose either -c, -w, or -b to determine whether to train a character-based,
+word-based, or bpe-based model.
+You must choose either -r, -e, -a, or -kfv to determine whether you are training,
+testing, tagging, or running k-fold validation.
+
+The other optional arguments are optional, and you can see the details below.
+
+Running "python run.py --help" will show you the following:
+
+usage: run.py [-h] [--model_name MODEL_NAME] [--word_dict_name WORD_DICT_NAME]
+              [--char_dict_name CHAR_DICT_NAME]
+              [--bpe_dict_name BPE_DICT_NAME] [--tag_dict_name TAG_DICT_NAME]
+              [--no_val] [--morph] [--flat | --multitask | --hierarchical]
+              [-we WORD_EMB_DIM] [-ce CHAR_EMB_DIM] [-he HIDDEN_DIM] [--cnn]
+              [-nk NUM_KERNELS] [-kw KERNEL_WIDTH] [--dropout DROPOUT]
+              [--directions {1,2}] [-lr LEARNING_RATE] [-bs BATCH_SIZE]
+              (-w | -c | -b) [-s] (-r | -e | -a | -kfv) [-k K]
+              [--epochs EPOCHS] [--disable_cuda] [-l LOG_FILE]
+              [-rp RESULT_PATH] [--use_true_pos] [--testing] [--debug]
+              [--add_path ADD_PATH]
+              [--loss_weights LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS]
+              [--seed SEED] [--max_words MAX_WORDS]
+              model_dir data_paths [data_paths ...]
+
+Train, test, or calculate POS
+
+positional arguments:
+  model_dir             Path to directory to save or load the model and all
+                        its necessary dicts
+  data_paths            Path to data pickles to train on/test on/tag
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --model_name MODEL_NAME
+                        Name for model
+  --word_dict_name WORD_DICT_NAME
+                        Name for word dictionary
+  --char_dict_name CHAR_DICT_NAME
+                        Name for char dictionary
+  --bpe_dict_name BPE_DICT_NAME
+                        Name for BPE dictionary
+  --tag_dict_name TAG_DICT_NAME
+                        Name for POS tag dictionary
+  --no_val              For training a model on all the data, without early
+                        stopping
+  --morph               Tag morphological analyses
+  --flat                Train separate model for each analysis field
+  --multitask           Train single multitask model for POS and all
+                        morphological analyses
+  --hierarchical        Train hierarchical models for morphological analyses
+  -we WORD_EMB_DIM, --word_emb_dim WORD_EMB_DIM
+                        Word embedding dimensionality
+  -ce CHAR_EMB_DIM, --char_emb_dim CHAR_EMB_DIM
+                        Character (or BPE) embedding dimensionality
+  -he HIDDEN_DIM, --hidden_dim HIDDEN_DIM
+                        Hidden state dimensionality
+  --cnn                 Use this flag to use char CNN instead of char LSTM
+  -nk NUM_KERNELS, --num_kernels NUM_KERNELS
+                        Number of kernels to use for char-CNN
+  -kw KERNEL_WIDTH, --kernel_width KERNEL_WIDTH
+                        Kernel width to use for char-CNN
+  --dropout DROPOUT     Dropout rate in LSTM
+  --directions {1,2}    Number of directions in LSTM
+  -lr LEARNING_RATE, --learning_rate LEARNING_RATE
+                        Learning rate
+  -bs BATCH_SIZE, --batch_size BATCH_SIZE
+                        Size of batch
+  -w, --word_based
+  -c, --char_based
+  -b, --bpe_based
+  -s, --smoothed
+  -r, --train
+  -e, --test
+  -a, --tag
+  -kfv, --kfold_validation
+  -k K                  Number of folds for kfold validation
+  --epochs EPOCHS       Maximum number of epochs to train
+  --disable_cuda        Disable CUDA
+  -l LOG_FILE, --log_file LOG_FILE
+                        Path to save log file at
+  -rp RESULT_PATH, --result_path RESULT_PATH
+                        Path *without extension* to save test/tag results at
+  --use_true_pos        When testing hierarchical models, use true pos tags
+                        and not predicted pos tags
+  --testing             Prints command line arguments for this run, and exits
+                        program
+  --debug               Set logger level to debug
+  --add_path ADD_PATH   Append script dir to python path
+  --loss_weights LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS LOSS_WEIGHTS
+                        Weights for averaging loss in MTL leaning, in order:
+                        POS, an1, an2, an3, enc
+  --seed SEED           Use specific seed for random elements in training
+  --max_words MAX_WORDS
+                        For training on smaller (random) subset of input
+                        sentences
