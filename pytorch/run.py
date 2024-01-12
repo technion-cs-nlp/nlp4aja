@@ -1048,8 +1048,7 @@ def filter_invalid_analysis_tags(ix_to_tag_list, test_pos, word_scores, field_re
     analyses_dict = {1: 'analysis1', 2: 'analysis2', 3: 'analysis3'}
     pos_index = np.int64(test_pos[sent_idx][word_idx].cpu().detach().numpy()) if isinstance(
         test_pos[sent_idx][word_idx], torch.Tensor) else test_pos[sent_idx][word_idx]
-    # TODO there was one word which received a pos index of 84, out of dict boundaries
-    pos_index = 83 if pos_index >= 84 else pos_index
+
     pos_value = ix_to_tag_list[0][pos_index]
 
     legal_morph_values = (legal_morph_values['pos'][pos_value][analyses_dict[field_idx]]
@@ -1625,3 +1624,4 @@ if __name__ == '__main__':
     else:
         # If testing, print args and exit
         print(args)
+        
