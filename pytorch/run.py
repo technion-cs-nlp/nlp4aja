@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,6 +8,7 @@ from sklearn.metrics import classification_report
 import argparse
 import datetime
 import math
+import json
 import os
 import csv
 import numpy as np
@@ -607,15 +609,36 @@ def get_loss_on_val(val_sents, val_tags, predicted_tags, loss_weights):
     return loss/divisor
 
 
-def predict_tags(model, sents):
+def predict_tags(model, sentences):
+    """
+    Predicting tags for a given model and a given set of sentences.
+    In case the sentence is empty, append an empty list to the predicted tags.
+    Upon receiving an invalid sentence, raise an error.
+    """
     model = model.eval()
     predicted = []
-    for sent in sents:
-        if len(sent) == 0:
-            predicted.append([])
-        else:
-            predicted_tags = model(sent)
-            predicted.append(predicted_tags)
+    invalid_line_counter = 0
+    
+    for sentence in sentences:
+        
+        try:
+            if len(sentence) == 0:
+                predicted.append([])
+            else:
+                predicted_tags = model(sentence)
+                predicted.append(predicted_tags)
+
+        except RuntimeError as e:
+            if 'zero batch' in str(e):
+                predicted.append([])
+                invalid_line_counter += 1
+            else:
+                print("An invalid sentence was given. Check input in cleaning stage.")
+                raise e
+            
+    if invalid_line_counter != 0:
+        print(f"{invalid_line_counter} invalid sentences found in the given input.")
+    
     return predicted
 
 
@@ -658,7 +681,7 @@ def test(test_data, model_path, word_dict_path, char_dict_path, bpe_dict_path,
          tag_dict_path, word_emb_dim, char_emb_dim, hidden_dim, dropout,
          num_kernels, kernel_width, by_char=False, by_bpe=False, out_path=None,
          cnn=False, directions=1, device='cpu', morph=False, use_true_pos=False,
-         test_sent_sources=None):
+         test_sent_sources=None, enforce_legal_morphology=False):
     """
 
     Prepares all the data, and then calls the function that actually runs testing
@@ -699,11 +722,11 @@ def test(test_data, model_path, word_dict_path, char_dict_path, bpe_dict_path,
         logger.info(f"Finished preparing MTL data:")
         logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
 
-        mtl_results = test_morph_tag(test_sents, all_test_field_tags, test_words, model_path,
+        mtl_results = test_morph_tag(None, test_sents, all_test_field_tags, None, test_words, None, model_path,
                                      word_to_ix, char_to_ix, bpe_to_ix, all_field_dict_paths,
                                      word_emb_dim, char_emb_dim, hidden_dim, dropout, num_kernels, kernel_width,
-                                     by_char, by_bpe, out_path, cnn, directions, device, field_names=field_names,
-                                     test_sent_sources=test_sent_sources)
+                                     enforce_legal_morphology, by_char, by_bpe, out_path, cnn, directions, device,
+                                     field_names=field_names, test_sent_sources=test_sent_sources)
         return mtl_results
 
     results = []
@@ -716,10 +739,13 @@ def test(test_data, model_path, word_dict_path, char_dict_path, bpe_dict_path,
     test_pos_tags = [[prepare_target(tag_sets, pos_tag_to_ix, field_idx=0).to(device=device)]
                        for (train_sent, tag_sets) in test_data]
 
-    pos_results = test_morph_tag(test_sents, test_pos_tags, test_words, pos_model_path, word_to_ix, char_to_ix,
+    pos_tag_dictionary_reversed = {value: key for key, value in pos_tag_to_ix.items()}
+    
+    pos_results = test_morph_tag(pos_tag_dictionary_reversed, test_sents, test_pos_tags, None, test_words, None, pos_model_path,
+                                 word_to_ix, char_to_ix,
                                  bpe_to_ix, [pos_dict_path], word_emb_dim, char_emb_dim, hidden_dim, dropout,
-                                 num_kernels, kernel_width, by_char, by_bpe, pos_out_path, cnn, directions, device,
-                                 field_names=["pos"], return_shaped_results=(morph==HIERARCHICAL),
+                                 num_kernels, kernel_width, False, by_char, by_bpe, pos_out_path, cnn, directions,
+                                 device, field_names=["pos"], return_shaped_results=(morph==HIERARCHICAL),
                                  test_sent_sources=test_sent_sources)
     results.append(pos_results)
 
@@ -755,11 +781,11 @@ def test(test_data, model_path, word_dict_path, char_dict_path, bpe_dict_path,
             test_field_tags = [[prepare_target(tag_sets, field_tag_to_ix, field_idx=field_idx).to(device=device)]
                                for (train_sent, tag_sets) in test_data]
 
-            field_results = test_morph_tag(test_sents, test_field_tags, test_words, field_model_path, word_to_ix,
-                                           char_to_ix, bpe_to_ix, [field_dict_path], word_emb_dim, char_emb_dim,
-                                           hidden_dim, dropout, num_kernels, kernel_width, by_char, by_bpe,
-                                           field_out_path, cnn, directions, device, pos_dict_size=pos_dict_size,
-                                           field_names=[field], test_sent_sources=test_sent_sources)
+            field_results = test_morph_tag(pos_tag_dictionary_reversed, test_sents, test_field_tags, test_pos_tags, test_words,
+                                           field_idx, field_model_path, word_to_ix, char_to_ix, bpe_to_ix, [field_dict_path],
+                                           word_emb_dim, char_emb_dim, hidden_dim, dropout, num_kernels, kernel_width,
+                                           enforce_legal_morphology, by_char, by_bpe, field_out_path, cnn, directions, device,
+                                           pos_dict_size, field_names=[field], test_sent_sources=test_sent_sources)
             results.append(field_results[0])
 
         return results
@@ -768,9 +794,9 @@ def test(test_data, model_path, word_dict_path, char_dict_path, bpe_dict_path,
         return pos_results[0]
 
 
-def test_morph_tag(test_sents, test_tags, test_words, model_path, word_dict, char_dict, bpe_dict, tag_dict_path_list,
-                   word_emb_dim, char_emb_dim, hidden_dim, dropout, num_kernels, kernel_width, by_char=False,
-                   by_bpe=False, out_path=None, cnn=False, directions=1, device='cpu',
+def test_morph_tag(pos_tag_dictionary, test_sents, test_field_tags, test_pos_tags, test_words, field_index, model_path,
+                   word_dict, char_dict, bpe_dict, tag_dict_path_list, word_emb_dim, char_emb_dim, hidden_dim, dropout, num_kernels,
+                   kernel_width, legal_morph, by_char=False, by_bpe=False, out_path=None, cnn=False, directions=1, device='cpu',
                    pos_dict_size=0, return_shaped_results=False, field_names=None, test_sent_sources=None):
 
     if not out_path:
@@ -807,29 +833,60 @@ def test_morph_tag(test_sents, test_tags, test_words, model_path, word_dict, cha
 
     ix_to_tag_list = [reverse_dict(tag_dict) for tag_dict in tag_dict_list]
     literal_test_tags = []
-    for sent in test_tags:
+    for sentence in test_field_tags:
         sent_literal = []
-        for field_idx, field_tags in enumerate(sent):
+        for field_idx, field_tags in enumerate(sentence):
             field_literal = [ix_to_tag_list[field_idx].get(tag.item(), 'OOV') for tag in field_tags]
             sent_literal.append(field_literal)
         literal_test_tags.append(sent_literal)
 
-    write_predictions_to_file(test_sents, test_words, tag_scores, out_path+"-tagged.tsv", ix_to_tag_list, word_dict,
-                              ground_truth=literal_test_tags, field_names=field_names,
-                              test_sent_sources=test_sent_sources)
+    if legal_morph:
 
-    results = [[[np.argmax(word_scores.cpu().detach().numpy()) for word_scores in field_scores]
-                for field_scores in sentence_scores] for sentence_scores in tag_scores]
+        index_to_tag_list = [pos_tag_dictionary, ix_to_tag_list[0]]
+
+        test_pos = [tensor for sublist in test_pos_tags
+                    if isinstance(sublist, list) and len(sublist) == 1 and isinstance(sublist[0], torch.Tensor)
+                    for tensor in sublist]
+
+        write_predictions_to_file(ix_to_tag_list, test_pos_tags, pos_tag_dictionary, field_index, test_sents,
+                                  test_words, test_pos, tag_scores, out_path + "-tagged.tsv", ix_to_tag_list, word_dict,
+                                  legal_morph, ground_truth=literal_test_tags, field_names=field_names,
+                                  test_sent_sources=test_sent_sources)
+
+        results = []
+        for sent_idx, sentence_scores in enumerate(tag_scores):
+            sentence_results = []
+            for _, field_scores in enumerate(sentence_scores, 1):
+                field_results = []
+                for word_idx, word_scores in enumerate(field_scores):
+                    # apply filter to word scores according to analysis type
+                    filter_invalid_analysis_tags(index_to_tag_list, test_pos, word_scores, field_results,
+                                                 field_index, sent_idx, word_idx)
+
+                sentence_results.append(field_results)
+            results.append(sentence_results)
+
+    else:
+
+        results = [[[np.argmax(word_scores.cpu().detach().numpy()) for word_scores in field_scores]
+                    for field_scores in sentence_scores] for sentence_scores in tag_scores]
 
     literal_test_predicted = []
-    for sent in results:
+    for sentence in results:
         sent_literal = []
-        for field_idx, field_tags in enumerate(sent):
-            field_literal = [ix_to_tag_list[field_idx].get(tag.item(), 'OOV') for tag in field_tags]
-            sent_literal.append(field_literal)
+        for field_idx, field_tags in enumerate(sentence):
+            try:
+                field_literal = [ix_to_tag_list[field_idx].get(tag.item(), 'OOV') for tag in field_tags]
+                sent_literal.append(field_literal)
+            except:
+                print("field_idx: ", field_idx, "\n")
+                print("field_tags: ", field_tags, "\n")
+                print("sent: ", sentence, "\n")
+                print("ix_to_tag_list[field_idx]: ", ix_to_tag_list[field_idx], "\n")
+
         literal_test_predicted.append(sent_literal)
     report_dicts = get_classification_report(literal_test_tags, literal_test_predicted, out_path, model_path,
-                                            len(tag_dict_list), field_names=field_names)
+                                             len(tag_dict_list), field_names=field_names)
 
     if not field_names:
         field_names = [f"{i}" for i in range(len(report_dicts))]
@@ -851,9 +908,21 @@ def get_classification_report(test_tags, test_predicted, out_path, model_path, n
     report_dicts = []
     for field_idx, out_path in enumerate(outpaths):
         field_true = [tag for sent in test_tags for tag in sent[field_idx]]
-        field_predicted = [tag for sent in test_predicted for tag in sent[field_idx]]
-        report = classification_report(field_true, field_predicted)
-        report_dict = classification_report(field_true, field_predicted, output_dict=True)
+        
+        field_predicted = []
+        for sentence in test_predicted:
+            if not sentence:
+                continue
+            else:
+                for tag in sentence[field_idx]:
+                    field_predicted.append(tag)
+
+        filtered_field_lists = [(value_true, value_predicted) for value_true, value_predicted in
+                          zip(field_true, field_predicted) if value_true != 'NA']
+        filtered_true, filtered_predicted = zip(*filtered_field_lists)
+
+        report = classification_report(filtered_true, filtered_predicted)
+        report_dict = classification_report(filtered_true, filtered_predicted, output_dict=True)
         report_dicts.append(report_dict)
         with open(out_path, 'w+', encoding='utf8') as report_file:
             report_file.write("Classification report:\n")
@@ -863,17 +932,42 @@ def get_classification_report(test_tags, test_predicted, out_path, model_path, n
     return report_dicts
 
 
-def write_predictions_to_file(sentences, test_words, tag_scores, out_path, tag_dict_list, word_dict, ground_truth=None,
-                              field_names=None, test_sent_sources=None):
-    results = [[[np.argmax(word_scores.cpu().detach().numpy()) for word_scores in field_scores]
-                for field_scores in sentence_scores] for sentence_scores in tag_scores]
+def write_predictions_to_file(ix_to_tag_list, test_pos_tags, pos_tag_dictionary, field_index, sentences, test_words,
+                              test_pos, tag_scores, out_path, tag_dict_list, word_dict, legal_morph,
+                              ground_truth=None, field_names=None, test_sent_sources=None):
+    if legal_morph:
+
+        test_pos = [tensor for sublist in test_pos_tags
+                    if isinstance(sublist, list) and len(sublist) == 1 and isinstance(sublist[0], torch.Tensor)
+                    for tensor in sublist]
+
+        index_to_tag_list = [pos_tag_dictionary, ix_to_tag_list[0]]
+
+        results = []
+        for sent_idx, sentence_scores in enumerate(tag_scores):
+            sentence_results = []
+            for _, field_scores in enumerate(sentence_scores, 1):
+                field_results = []
+                for word_idx, word_scores in enumerate(field_scores):
+                    # apply filter to word scores according to analysis type
+                    filter_invalid_analysis_tags(index_to_tag_list, test_pos, word_scores, field_results,
+                                                 field_index, sent_idx, word_idx)
+
+                sentence_results.append(field_results)
+            results.append(sentence_results)
+
+    else:
+
+        results = [[[np.argmax(word_scores.cpu().detach().numpy()) for word_scores in field_scores]
+                    for field_scores in sentence_scores] for sentence_scores in tag_scores]
+
     if not test_sent_sources:
         test_sent_sources = [("", "") for _ in sentences]
     num_fields = len(tag_dict_list)
     with open(out_path, 'w+', encoding='utf8', newline="") as out_f:
         tsv_writer = csv.writer(out_f, delimiter='\t')
         if ground_truth:
-            column_names = ['source_file', 'source_sheet', 'sentence_id', 'word']
+            column_names = ['source_file', 'source_sheet', 'sentence_id', 'word', 'true_pos']
             if field_names:
                 if len(field_names) == num_fields:
                     for name in field_names:
@@ -884,10 +978,11 @@ def write_predictions_to_file(sentences, test_words, tag_scores, out_path, tag_d
                 for i in range(num_fields):
                     column_names.extend([f"true_{i}", f"predicted_{i}"])
             tsv_writer.writerow(column_names)
-            for i, (sent_words, true_fields, pred_fields, source) in enumerate(zip(test_words, ground_truth,
-                                                                                   results, test_sent_sources)):
+            for i, (sent_words, true_fields, pred_fields, source, true_pos) in enumerate(zip(test_words, ground_truth,
+                                                                                             results, test_sent_sources,
+                                                                                             test_pos)):
                 for j, word in enumerate(sent_words):
-                    row = [source[0], source[1], i, word]
+                    row = [source[0], source[1], i, word, pos_tag_dictionary[np.int64(true_pos[j].cpu())]]
                     for field_idx, (field_true_tags, field_pred_tags) in enumerate(zip(true_fields, pred_fields)):
                         row.extend([field_true_tags[j], tag_dict_list[field_idx][field_pred_tags[j]]])
                     tsv_writer.writerow(row)
@@ -910,11 +1005,71 @@ def write_predictions_to_file(sentences, test_words, tag_scores, out_path, tag_d
                         row.extend([tag_dict_list[field_idx][field_pred_tags[j]]])
                     tsv_writer.writerow(row)
 
+def filter_invalid_pos_tags(ix_to_tag_list, field_results, untagged_sents, word_scores, sent_idx, word_idx):
+    """
+    Allows filtering cases words are tagged with underscore ("_") or numerical cases.
+    In cases that the best POS tag chosen for a word is an underscore and is a legal word,
+    the second-best part of speech tag is chosen from the POS score list for that word.
+    ix_to_tag_list[0] is the list of all possible POS tags for a word.
+    All non-numerical words that are at least 3 letters long are compelled to receive a valid POS,
+    meaning one which is not an underscore.
+    """
+
+    if ix_to_tag_list[0][np.argmax(word_scores.cpu().detach().numpy())] != "_":
+        field_results.append(np.argmax(word_scores.cpu().detach().numpy()))
+
+    else:
+        word_text = untagged_sents[sent_idx][word_idx][0].strip()
+        if word_text.isdigit() or len(word_text) < 3:
+            field_results.append(np.argmax(word_scores.cpu().detach().numpy()))
+        else:
+            sorted_indices = np.argsort(word_scores.cpu().detach().numpy())
+            field_results.append(sorted_indices[1])
+
+
+def filter_invalid_analysis_tags(ix_to_tag_list, test_pos, word_scores, field_results, field_idx, sent_idx, word_idx):
+    """
+    This function oversees the applying of legal morphological values, according to every field (analysis type),
+    conforming to legal_values.json.
+    By applying a mask to word_scores, the best tag is chosen only from the group of legal tags.
+    indices of illegal values are neutralized using -np.inf while the latter are set to zero.
+
+    :param ix_to_tag_list: a dictionary containing all the sets of tags according to every analysis field.
+                           the first field in index 0 is the pos tags.
+    :param test_pos: a list of part of speech tags.
+    :param word_scores: scores per each word.
+    :param field_results: results by field.
+    :param field_idx: the morphological analysis type.
+    :param sent_idx: number of the sentence object.
+    :param word_idx: the index of the word within the current sentence.
+    """
+    all_field_tags = ix_to_tag_list[1] if len(ix_to_tag_list) == 2 else ix_to_tag_list[field_idx]
+
+    analyses_dict = {1: 'analysis1', 2: 'analysis2', 3: 'analysis3'}
+    pos_index = np.int64(test_pos[sent_idx][word_idx].cpu().detach().numpy()) if isinstance(
+        test_pos[sent_idx][word_idx], torch.Tensor) else test_pos[sent_idx][word_idx]
+
+    pos_value = ix_to_tag_list[0][pos_index]
+
+    legal_morph_values = (legal_morph_values['pos'][pos_value][analyses_dict[field_idx]]
+                          if (pos_value in legal_morph_values['pos']) and field_idx < 4
+                          else legal_morph_values['enclitic'])
+
+    mask = np.where(np.array([all_field_tags.get(index, None) in legal_morph_values
+                              for index in range(len(all_field_tags))]), 0, -np.inf)
+
+    field_results.append(
+        # append scores with or without applying mask, according to POS value
+        np.argmax(word_scores.cpu().detach().numpy() + mask)
+        if (pos_value in legal_morph_values['pos'])
+        else np.argmax(word_scores.cpu().detach().numpy()))
+
 
 def tag(data_path, model_path, word_dict_path, char_dict_path,
         bpe_dict_path, tag_dict_path, word_emb_dim, char_emb_dim, hidden_dim, dropout,
         num_kernels, kernel_width, by_char=False, by_bpe=False,
-        out_path=None, cnn=False, directions=1, device='cpu', morph=None, use_true_pos=False):
+        out_path=None, cnn=False, directions=1, device='cpu', morph=None, use_true_pos=False,
+        legal_morph=False):
     """
 
     :param data_path:
@@ -1000,8 +1155,16 @@ def tag(data_path, model_path, word_dict_path, char_dict_path,
 
         tag_scores = predict_tags(model, test_words)
 
-        results_by_field.append([[[np.argmax(word_scores.cpu().detach().numpy()) for word_scores in field_scores]
-                                  for field_scores in sentence_scores] for sentence_scores in tag_scores])
+        for sent_idx, sentence_scores in enumerate(tag_scores):
+            sentence_results = []
+            for _, field_scores in enumerate(sentence_scores):
+                field_results = []
+                for word_idx, word_scores in enumerate(field_scores):
+                    filter_invalid_pos_tags(ix_to_tag_list, field_results, untagged_sents,
+                                            word_scores, sent_idx, word_idx)
+                sentence_results.append(field_results)
+            results_by_field.append(sentence_results)
+        results_by_field = [results_by_field]
 
         if morph == FLAT or morph == HIERARCHICAL:
 
@@ -1015,7 +1178,10 @@ def tag(data_path, model_path, word_dict_path, char_dict_path,
                                 for sent_obj in untagged_sent_objects]
                     test_pos = [torch.LongTensor([get_index(pos, pos_dict) for pos in sent_poses]).to(device=device) for sent_poses in test_pos]
                 else:
-                    test_pos = [sent[0] for sent in results_by_field[0]]
+                    test_pos = []
+                    for sent in results_by_field[0]:
+                        if sent:
+                            test_pos.append(sent[0])
 
                 if by_bpe or by_char:
                     test_words = [[(idxs[0], idxs[1], tag_idx) for idxs, tag_idx in zip(sent, sent_tags)]
@@ -1026,7 +1192,7 @@ def tag(data_path, model_path, word_dict_path, char_dict_path,
                 pos_dict_size = len(tag_dict_list[0])
 
             for field_idx, field in enumerate(field_names[1:]):
-
+                results_by_field.append([])
                 field_idx += 1
 
                 field_model_path = model_path_parts[0] + f"-{field}." + model_path_parts[1]
@@ -1040,12 +1206,33 @@ def tag(data_path, model_path, word_dict_path, char_dict_path,
 
                 tag_scores = predict_tags(model, test_words)
 
-                # TODO make sure shape is appropriate.
-                results_by_field.append([[[np.argmax(word_scores.cpu().detach().numpy())
-                                           for word_scores in field_scores]
-                                          for field_scores in sentence_scores]
-                                         for sentence_scores in tag_scores])
+                results_by_field = []
+
+                # filter tag scores according to legal morph. values
+                if legal_morph:
+
+                    results_by_field = [[] for i in enumerate(field_names)]
+                    for sent_idx, sentence_scores in enumerate(tag_scores):
+                        sentence_results = []
+                        for _, field_scores in enumerate(sentence_scores, 1):
+                            field_results = []
+                            for word_idx, word_scores in enumerate(field_scores):
+                                # apply filter to word scores according to analysis type
+                                filter_invalid_analysis_tags(ix_to_tag_list, test_pos, word_scores, field_results,
+                                                             field_idx, sent_idx, word_idx)
+
+                            sentence_results.append(field_results)
+                        results_by_field[field_idx].append(sentence_results)
+
+                else:
+                    # Not enforcing legal morphological values
+                    results_by_field.append([[[np.argmax(word_scores.cpu().detach().numpy())
+                                               for word_scores in field_scores]
+                                              for field_scores in sentence_scores]
+                                             for sentence_scores in tag_scores])
+
             results = reshape_by_field_to_by_sent(results_by_field)
+
         else:
             # this is POS only tagging
             results = reshape_by_field_to_by_sent(results_by_field, num_fields=1)  # TODO make sure this is correct
@@ -1063,11 +1250,21 @@ def reshape_by_field_to_by_sent(results_by_field, num_fields=5):
     :return:
     """
     sentences = []
+    
     for sentence_idx in range(len(results_by_field[0])):
         sentence_words = []
+    
         for field_idx in range(num_fields):
-            sentence_words.append(results_by_field[field_idx][sentence_idx][0])
+            
+            sentence = results_by_field[field_idx][sentence_idx]
+            if not sentence:
+                # in case current sentence is empty, append empty list
+                sentence_words.append([])
+            else:
+                sentence_words.append(sentence[0])
+        
         sentences.append(sentence_words)
+    
     return sentences
 
 
@@ -1259,7 +1456,7 @@ def main(args):
              num_kernels=args.num_kernels, kernel_width=args.kernel_width,
              by_char=char_based, by_bpe=bpe_based, cnn=args.cnn, directions=args.directions,
              out_path=args.result_path, device=args.device, morph=morph, use_true_pos=args.use_true_pos,
-             test_sent_sources=sources)
+             test_sent_sources=sources, enforce_legal_morphology=args.legal_morph)
 
     elif args.tag:
         tag(args.data_paths, model_path, word_dict_path, char_dict_path, bpe_dict_path,
@@ -1267,7 +1464,9 @@ def main(args):
             hidden_dim=args.hidden_dim, dropout=args.dropout,
             num_kernels=args.num_kernels, kernel_width=args.kernel_width,
             by_char=char_based, by_bpe=bpe_based, cnn=args.cnn, directions=args.directions,
-            out_path=args.result_path, device=args.device, morph=morph, use_true_pos=args.use_true_pos)
+            out_path=args.result_path, device=args.device, morph=morph, use_true_pos=args.use_true_pos,
+            legal_morph=args.legal_morph)
+        
     elif args.kfold_validation:
         kfold_val(args.data_paths, model_path, word_dict_path,
                   char_dict_path, bpe_dict_path, tag_dict_path,
@@ -1384,7 +1583,11 @@ if __name__ == '__main__':
                         type=int,
                         default=math.inf,
                         help='For training on smaller (random) subset of input sentences')
-    
+
+    parser.add_argument('--legal_morph', 
+                        action='store_true', 
+                        help='Enforce legal morphological values according to constrains in legal_values.json')
+
     args, unknown = parser.parse_known_args()
 
     args.device = None
@@ -1403,7 +1606,22 @@ if __name__ == '__main__':
         from utils import split_train_val
         from data_classes import write_sentences_to_excel
 
-    if args.testing:
-        print(args)
+    if not args.testing:
+
+        # If enforcing legal morphological values, load legal_values.json
+        if args.legal_morph:
+            with open("legal_values.json") as legal_values_file:
+                legal_morph_values = json.load(legal_values_file)
+
+        try:
+            main(args)
+        
+        finally:
+            if args.legal_morph:
+                legal_values_file.close()
+
+
     else:
-        main(args)
+        # If testing, print args and exit
+        print(args)
+        
